@@ -161,6 +161,7 @@ struct SystemPerformanceLog: Codable, Identifiable {
 
 struct SessionDataExport: Codable {
     let metadata: SessionMetadataLog
+    let experiment1Responses: [Experiment1ResponseLog]
     let detectionEvents: [DetectionEventLog]
     let responseEvents: [ResponseEventLog]
     let pulseEvents: [PulseEventLog]

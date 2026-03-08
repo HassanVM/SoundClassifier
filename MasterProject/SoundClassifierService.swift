@@ -28,8 +28,13 @@ final class SoundClassifierService: NSObject, ObservableObject {
     /// Currently detected category
     @Published var activeCategory: SoundCategory?
 
-    @Published var hapticsEnabled: Bool = true {
+    @Published var hapticsEnabled: Bool = false {
         didSet { HapticService.shared.setEnabled(hapticsEnabled) }
+    }
+
+    /// Enabled only in Experiment 2 Visual+Audio condition
+    @Published var audioFeedbackEnabled: Bool = false {
+        didSet { AudioFeedbackService.shared.setEnabled(audioFeedbackEnabled) }
     }
     @Published var recentTrustEvents: [TrustEvent] = []
     @Published var feedbackLog: [UserFeedback] = []
@@ -50,14 +55,13 @@ final class SoundClassifierService: NSObject, ObservableObject {
 
     // MARK: - Awareness Card Tuning
 
-    private let displayThreshold: Double = 0.65
-    private let minConsecutive: Int = 2
-    private let holdDuration: TimeInterval = 2.0 // Extended from 1.0 to keep card visible longer
+    private let displayThreshold: Double = 0.75
+    private let minConsecutive: Int = 3
+    private let holdDuration: TimeInterval = 2.0
 
-    /// Some sounds (cough, scream) are transient and may only appear for 1 frame.
-    /// These categories can display with just 1 frame at higher confidence.
+    /// Transient sounds can display with fewer frames but still need high confidence.
     private let transientCategories: Set<SoundCategory> = [.coughing, .glassBreaking, .knocking]
-    private let transientSingleFrameThreshold: Double = 0.40 // Show after 1 frame if confidence ≥ this
+    private let transientSingleFrameThreshold: Double = 0.65
 
     private var candidateCategory: SoundCategory?
     private var candidateCount: Int = 0
@@ -74,12 +78,12 @@ final class SoundClassifierService: NSObject, ObservableObject {
     }
 
     private let pulseConfigs: [SoundCategory: PulseConfig] = [
-        .knocking:      PulseConfig(peakThreshold: 0.20, minPulseInterval: 0.10, graceSeconds: 1.00, confidenceThreshold: 0.25, onsetMinInterval: 0.35),
-        .dogBarking:    PulseConfig(peakThreshold: 0.20, minPulseInterval: 0.14, graceSeconds: 1.20, confidenceThreshold: 0.30, onsetMinInterval: 0.40),
-        .babyCrying:    PulseConfig(peakThreshold: 0.18, minPulseInterval: 0.14, graceSeconds: 1.40, confidenceThreshold: 0.30, onsetMinInterval: 0.40),
-        .coughing:      PulseConfig(peakThreshold: 0.15, minPulseInterval: 1.50, graceSeconds: 1.50, confidenceThreshold: 0.20, onsetMinInterval: 1.80),
-        .glassBreaking: PulseConfig(peakThreshold: 0.15, minPulseInterval: 3.00, graceSeconds: 0.0, confidenceThreshold: 0.25, onsetMinInterval: 3.00),
-        .alarm:         PulseConfig(peakThreshold: 0.18, minPulseInterval: 0.12, graceSeconds: 1.60, confidenceThreshold: 0.25, onsetMinInterval: 0.45),
+        .knocking:      PulseConfig(peakThreshold: 0.20, minPulseInterval: 0.10, graceSeconds: 1.00, confidenceThreshold: 0.50, onsetMinInterval: 0.35),
+        .dogBarking:    PulseConfig(peakThreshold: 0.20, minPulseInterval: 0.14, graceSeconds: 1.20, confidenceThreshold: 0.50, onsetMinInterval: 0.40),
+        .babyCrying:    PulseConfig(peakThreshold: 0.18, minPulseInterval: 0.14, graceSeconds: 1.40, confidenceThreshold: 0.50, onsetMinInterval: 0.40),
+        .coughing:      PulseConfig(peakThreshold: 0.15, minPulseInterval: 1.50, graceSeconds: 1.50, confidenceThreshold: 0.45, onsetMinInterval: 1.80),
+        .glassBreaking: PulseConfig(peakThreshold: 0.15, minPulseInterval: 3.00, graceSeconds: 0.0, confidenceThreshold: 0.50, onsetMinInterval: 3.00),
+        .alarm:         PulseConfig(peakThreshold: 0.18, minPulseInterval: 0.12, graceSeconds: 1.60, confidenceThreshold: 0.50, onsetMinInterval: 0.45),
     ]
 
     private var eligibleUntil: [SoundCategory: CFTimeInterval] = [:]
@@ -160,9 +164,22 @@ final class SoundClassifierService: NSObject, ObservableObject {
 
     private nonisolated func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
+        // .allowBluetoothA2DP routes audio output to AirPods/Bluetooth headphones
+        // Do NOT use .allowBluetoothHFP — that routes mic input to AirPods
+        // Do NOT use .defaultToSpeaker — that overrides Bluetooth audio output
         try session.setCategory(.playAndRecord, mode: .default,
-                                options: [.mixWithOthers, .allowBluetoothHFP])
+                                options: [.mixWithOthers, .allowBluetoothA2DP])
+        try session.setAllowHapticsAndSystemSoundsDuringRecording(true)
         try session.setActive(true)
+        
+        // Force microphone input to the iPhone's built-in mic
+        if let builtInMic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+            try session.setPreferredInput(builtInMic)
+        }
+        
+        print("🔊 Audio session configured:")
+        print("   Input: \(session.currentRoute.inputs.map { $0.portName })")
+        print("   Output: \(session.currentRoute.outputs.map { $0.portName })")
     }
 
     private func startEngineAndAnalyzer() throws {
@@ -205,8 +222,8 @@ final class SoundClassifierService: NSObject, ObservableObject {
 
     private func updateStableDisplay(with pred: SoundPrediction) {
         guard let category = pred.category else {
-            // Unknown label — don't clear immediately, just skip
-            if pred.confidence < 0.30 { scheduleStableClear() }
+            // Unknown label — schedule clear
+            scheduleStableClear()
             return
         }
 
@@ -246,7 +263,10 @@ final class SoundClassifierService: NSObject, ObservableObject {
                     amplitude: currentAmplitude
                 )
             } else {
-                intensity = currentAmplitude > 0.30 ? .urgent : .routine
+                // No session manager (training mode) — use amplitude
+                // Log amplitude so we can calibrate during pilot testing
+                print("📊 Amplitude: \(String(format: "%.3f", currentAmplitude)) → \(currentAmplitude > 0.15 ? "URGENT" : "routine")")
+                intensity = currentAmplitude > 0.15 ? .urgent : .routine
             }
 
             let newDisplay = AwarenessDisplayState(
@@ -332,8 +352,13 @@ final class SoundClassifierService: NSObject, ObservableObject {
     private func firePulse(for category: SoundCategory, reason: String) {
         pulseIDs[category] = (pulseIDs[category] ?? 0) + 1
 
+        print("🎯 firePulse: \(category.displayName) | hapticsEnabled=\(hapticsEnabled) | audioEnabled=\(audioFeedbackEnabled)")
+
         if hapticsEnabled {
             HapticService.shared.fireHaptic(for: category)
+        }
+        if audioFeedbackEnabled {
+            AudioFeedbackService.shared.play(for: category)
         }
 
         let intensity = currentDisplay?.intensityLevel
@@ -361,7 +386,7 @@ final class SoundClassifierService: NSObject, ObservableObject {
         var sum: Float = 0
         for i in 0..<frameLength { let x = channel[i]; sum += x * x }
         let rms = sqrt(sum / Float(frameLength))
-        return min(max(Double(rms) * 8.0, 0.0), 1.0)
+        return min(max(Double(rms) * 12.0, 0.0), 1.0)
     }
 
     // MARK: - Trust Events

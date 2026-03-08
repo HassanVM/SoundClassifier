@@ -19,41 +19,27 @@ enum SoundCategory: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
     var displayName: String { rawValue }
 
-    /// Haptic intensity for this category (does NOT vary with routine/urgent)
-    var hapticLevel: HapticLevel {
-        switch self {
-        case .alarm, .babyCrying, .glassBreaking: return .heavy
-        case .knocking, .coughing: return .medium
-        case .dogBarking: return .light
-        }
-    }
-
     /// Maps Apple classifier labels to our 6 categories
     static func from(classifierLabel: String) -> SoundCategory? {
         let s = classifierLabel.lowercased()
 
-        if s.contains("knock") || s.contains("tap") || s.contains("thump")
-            || s.contains("bang") || s.contains("impact") || s.contains("door") {
+        if s.contains("knock") || s.contains("door") {
             return .knocking
         }
-        if s.contains("dog") || s.contains("bark") || s.contains("growl")
-            || s.contains("whimper") || s.contains("howl") {
+        if s.contains("dog") || s.contains("bark") {
             return .dogBarking
         }
         if s.contains("baby") || s.contains("cry") || s.contains("infant") {
             return .babyCrying
         }
-        if s.contains("cough") || s.contains("throat_clearing")
-            || s.contains("sneeze") || s.contains("gasp") {
+        if s.contains("cough") || s.contains("throat_clearing") {
             return .coughing
         }
-        if s.contains("glass") || s.contains("shatter") || s.contains("smash")
-            || s.contains("crash") || s.contains("break") || s.contains("crack")
-            || s.contains("clatter") || s.contains("clang") {
+        if s.contains("glass") || s.contains("shatter") {
             return .glassBreaking
         }
-        if s.contains("siren") || s.contains("alarm") || s.contains("ambulance")
-            || s.contains("police") || s.contains("fire") || s.contains("emergency") {
+        if s.contains("siren") || s.contains("alarm") || s.contains("smoke_detector")
+            || s.contains("fire_alarm") {
             return .alarm
         }
 
@@ -86,12 +72,6 @@ enum VisualCondition: String, CaseIterable, Codable, Identifiable {
         case .animation: return "C"
         }
     }
-}
-
-// MARK: - Haptic Level
-
-enum HapticLevel: String, Codable {
-    case light, medium, heavy
 }
 
 // MARK: - Confidence Bucket
